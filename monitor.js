@@ -100,18 +100,19 @@ async function fetchSlots(date, partySize, token) {
   return Array.isArray(data) ? data : (data.slots ?? []);
 }
 
-function parseAvailableDates(data, partySize) {
+function parseBookableDates(data, partySize) {
   const entries = Array.isArray(data)
     ? data
     : Object.entries(data).map(([date, info]) => ({ date, ...info }));
 
   return entries
-    .filter(e => {
-      const date = e.date || e.slot_date;
-      const fullyBooked = e.fully_booked ?? e.no_availability ?? true;
-      return date && !fullyBooked;
-    })
-    .map(e => ({ date: e.date || e.slot_date, pax: partySize }));
+    .filter(e =>
+      e.is_open === true &&
+      e.within_min_advance === true &&
+      e.within_max_advance === true &&
+      e.no_availability === false
+    )
+    .map(e => ({ date: e.date, pax: partySize }));
 }
 
 // Track alerted slots: "date|pax|time"
@@ -152,22 +153,19 @@ async function poll() {
 
     for (const pax of partySizes) {
       const calendar = await fetchCalendar(pax, token);
-      const available = parseAvailableDates(calendar, pax);
+      const bookable = parseBookableDates(calendar, pax);
 
-      for (const { date, pax: p } of available) {
+      for (const { date, pax: p } of bookable) {
         const slots = await fetchSlots(date, p, token);
         const times = slots
           .map(s => s.time || s.slot_time || s.start_time)
           .filter(Boolean);
 
-        // Alert if any time slot is new
+        // Only alert for genuinely open time slots that we haven't alerted on yet
         const newTimes = times.filter(t => !alerted.has(`${date}|${p}|${t}`));
-        // Also alert if date is new even with no time breakdown
-        const dateKey = `${date}|${p}|_`;
-        if (newTimes.length > 0 || (!alerted.has(dateKey) && times.length === 0)) {
-          newAlerts.push({ date, pax: p, times: newTimes.length ? newTimes : times });
+        if (newTimes.length > 0) {
+          newAlerts.push({ date, pax: p, times: newTimes });
           newTimes.forEach(t => alerted.add(`${date}|${p}|${t}`));
-          if (times.length === 0) alerted.add(dateKey);
         }
       }
     }
