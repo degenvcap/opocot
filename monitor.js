@@ -1,12 +1,13 @@
 import 'dotenv/config';
 import fetch from 'node-fetch';
+import { solveChallenge } from 'altcha-lib';
 
 const {
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHANNEL_ID,
-  RESTAURANT_SLUG = 'opocot',
+  VENUE_API_KEY = '3de1f391-9f59-4b07-ab7e-200ead279711',
+  PARTY_SIZES = '1,2,3,4,5,6',
   POLL_INTERVAL_MS = '30000',
-  UMAI_BASE_URL = 'https://umai.io',
 } = process.env;
 
 if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
@@ -16,50 +17,105 @@ if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHANNEL_ID) {
 
 const POLL_MS = parseInt(POLL_INTERVAL_MS, 10);
 const TG_API = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
+const API = 'https://letsumai.com/widget/api/v2';
+const BROWSER_HEADERS = {
+  'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+  'origin': 'https://reservation.umai.io',
+  'referer': 'https://reservation.umai.io/',
+  'accept': 'application/json',
+  'sec-fetch-mode': 'cors',
+  'sec-fetch-site': 'cross-site',
+  'sec-fetch-dest': 'empty',
+};
 
-// Track seen slots to avoid duplicate alerts
-const seenSlots = new Set();
+// Token cache — refresh before 15 min expiry
+let cachedToken = null;
+let tokenExpiresAt = 0;
 
-async function fetchAvailableSlots() {
-  // UMAI booking API — returns available dates/times for a restaurant slug
-  const url = `${UMAI_BASE_URL}/api/v1/restaurants/${RESTAURANT_SLUG}/availability`;
-  const res = await fetch(url, {
-    headers: {
-      'Accept': 'application/json',
-      'User-Agent': 'Opocot-Bot/1.0',
-    },
+async function getToken() {
+  if (cachedToken && Date.now() < tokenExpiresAt) return cachedToken;
+
+  // Step 1: Get challenge
+  const challengeRes = await fetch(`${API}/altcha/challenge`, {
+    headers: { ...BROWSER_HEADERS, 'venue-api-key': VENUE_API_KEY },
   });
+  if (!challengeRes.ok) throw new Error(`Challenge fetch failed: ${challengeRes.status}`);
+  const challenge = await challengeRes.json();
 
-  if (!res.ok) {
-    throw new Error(`UMAI API ${res.status}: ${res.statusText}`);
-  }
+  // Step 2: Solve proof-of-work
+  const { promise } = solveChallenge(challenge.challenge, challenge.salt, challenge.algorithm, 300000);
+  const solved = await promise;
+  if (!solved) throw new Error('Failed to solve ALTCHA challenge');
 
+  // Build base64 payload expected by verify endpoint
+  const payload = Buffer.from(JSON.stringify({
+    algorithm: challenge.algorithm,
+    challenge: challenge.challenge,
+    number: solved.number,
+    salt: challenge.salt,
+    signature: challenge.signature,
+  })).toString('base64');
+
+  // Step 3: Verify and get JWT
+  const verifyRes = await fetch(`${API}/altcha/verify`, {
+    method: 'POST',
+    headers: { ...BROWSER_HEADERS, 'venue-api-key': VENUE_API_KEY, 'content-type': 'application/json' },
+    body: JSON.stringify({ solution: payload }),
+  });
+  if (!verifyRes.ok) throw new Error(`Token verify failed: ${verifyRes.status}`);
+  const { token } = await verifyRes.json();
+
+  cachedToken = token;
+  tokenExpiresAt = Date.now() + 14 * 60 * 1000; // refresh at 14 min (expires at 15)
+  console.log(`[${new Date().toISOString()}] Fresh ALTCHA token obtained`);
+  return token;
+}
+
+function getMonthRange() {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const start = `01-${pad(now.getMonth() + 1)}-${now.getFullYear()}`;
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const end = `${lastDay}-${pad(now.getMonth() + 1)}-${now.getFullYear()}`;
+  return { start, end };
+}
+
+async function fetchCalendar(partySize, token) {
+  const { start, end } = getMonthRange();
+  const url = `${API}/slots/calendar?party_size=${partySize}&start_date=${start}&end_date=${end}`;
+  const res = await fetch(url, {
+    headers: { ...BROWSER_HEADERS, 'venue-api-key': VENUE_API_KEY, 'x-altcha-token': token },
+  });
+  if (!res.ok) throw new Error(`Calendar API ${res.status} for pax ${partySize}`);
   return res.json();
 }
 
-function parseSlots(data) {
-  // Adapt this to match actual UMAI response shape (run inspect-api.js first)
-  const slots = [];
-
-  if (Array.isArray(data)) {
-    for (const entry of data) {
-      const date = entry.date || entry.slot_date || entry.datetime;
-      const time = entry.time || entry.slot_time || '';
-      const pax = entry.pax || entry.capacity || entry.available_pax || '';
-      if (date) slots.push({ date, time, pax });
-    }
-  } else if (data?.slots) {
-    return parseSlots(data.slots);
-  } else if (data?.availability) {
-    return parseSlots(data.availability);
-  }
-
-  return slots;
+async function fetchSlots(date, partySize, token) {
+  const url = `${API}/slots?party_size=${partySize}&date=${date}`;
+  const res = await fetch(url, {
+    headers: { ...BROWSER_HEADERS, 'venue-api-key': VENUE_API_KEY, 'x-altcha-token': token },
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data) ? data : (data.slots ?? []);
 }
 
-function slotKey(slot) {
-  return `${slot.date}|${slot.time}|${slot.pax}`;
+function parseAvailableDates(data, partySize) {
+  const entries = Array.isArray(data)
+    ? data
+    : Object.entries(data).map(([date, info]) => ({ date, ...info }));
+
+  return entries
+    .filter(e => {
+      const date = e.date || e.slot_date;
+      const fullyBooked = e.fully_booked ?? e.no_availability ?? true;
+      return date && !fullyBooked;
+    })
+    .map(e => ({ date: e.date || e.slot_date, pax: partySize }));
 }
+
+// Track alerted slots: "date|pax|time"
+const alerted = new Set();
 
 async function sendTelegram(message) {
   const res = await fetch(`${TG_API}/sendMessage`, {
@@ -72,39 +128,53 @@ async function sendTelegram(message) {
       disable_web_page_preview: false,
     }),
   });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Telegram API ${res.status}: ${body}`);
-  }
+  if (!res.ok) throw new Error(`Telegram ${res.status}: ${await res.text()}`);
 }
 
-function formatAlert(newSlots) {
-  const lines = newSlots.map(s => {
-    const time = s.time ? ` @ ${s.time}` : '';
-    const pax = s.pax ? ` (${s.pax} pax)` : '';
-    return `📅 <b>${s.date}</b>${time}${pax}`;
+function formatAlert(alerts) {
+  const lines = alerts.map(a => {
+    const times = a.times.length ? `\n    ⏰ ${a.times.join(', ')}` : '';
+    return `📅 <b>${a.date}</b> — ${a.pax} pax${times}`;
   });
-
   return [
-    '🔔 <b>Opocot!</b> Slot baru terbuka:\n',
+    '🔔 <b>Opocot! Ada slot baru terbuka!</b>\n',
     ...lines,
     '',
-    `👉 Book sekarang: https://umai.io/restaurants/${RESTAURANT_SLUG}`,
+    '👉 <a href="https://reservation.umai.io/en/widget/rembayung">Book sekarang</a>',
   ].join('\n');
 }
 
 async function poll() {
   try {
-    const data = await fetchAvailableSlots();
-    const slots = parseSlots(data);
+    const token = await getToken();
+    const partySizes = PARTY_SIZES.split(',').map(n => n.trim());
+    const newAlerts = [];
 
-    const newSlots = slots.filter(s => !seenSlots.has(slotKey(s)));
+    for (const pax of partySizes) {
+      const calendar = await fetchCalendar(pax, token);
+      const available = parseAvailableDates(calendar, pax);
 
-    if (newSlots.length > 0) {
-      console.log(`[${new Date().toISOString()}] ${newSlots.length} new slot(s) found`);
-      await sendTelegram(formatAlert(newSlots));
-      newSlots.forEach(s => seenSlots.add(slotKey(s)));
+      for (const { date, pax: p } of available) {
+        const slots = await fetchSlots(date, p, token);
+        const times = slots
+          .map(s => s.time || s.slot_time || s.start_time)
+          .filter(Boolean);
+
+        // Alert if any time slot is new
+        const newTimes = times.filter(t => !alerted.has(`${date}|${p}|${t}`));
+        // Also alert if date is new even with no time breakdown
+        const dateKey = `${date}|${p}|_`;
+        if (newTimes.length > 0 || (!alerted.has(dateKey) && times.length === 0)) {
+          newAlerts.push({ date, pax: p, times: newTimes.length ? newTimes : times });
+          newTimes.forEach(t => alerted.add(`${date}|${p}|${t}`));
+          if (times.length === 0) alerted.add(dateKey);
+        }
+      }
+    }
+
+    if (newAlerts.length > 0) {
+      console.log(`[${new Date().toISOString()}] ${newAlerts.length} new slot(s)!`);
+      await sendTelegram(formatAlert(newAlerts));
     } else {
       console.log(`[${new Date().toISOString()}] No new slots`);
     }
@@ -113,6 +183,6 @@ async function poll() {
   }
 }
 
-console.log(`Opocot bot started. Polling every ${POLL_MS / 1000}s for "${RESTAURANT_SLUG}"...`);
-poll(); // immediate first check
+console.log(`Opocot bot started. Polling every ${POLL_MS / 1000}s...`);
+poll();
 setInterval(poll, POLL_MS);

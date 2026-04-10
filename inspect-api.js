@@ -7,7 +7,7 @@
 import 'dotenv/config';
 import fetch from 'node-fetch';
 
-const SLUG = process.env.RESTAURANT_SLUG || 'opocot';
+const SLUG = process.env.RESTAURANT_SLUG || 'rembayung';
 const BASE = process.env.UMAI_BASE_URL || 'https://umai.io';
 
 const ENDPOINTS = [
