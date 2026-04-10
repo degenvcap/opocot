@@ -1,0 +1,18 @@
+{
+  "name": "rembayung-alert",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Telegram alert bot for Rembayung UMAI booking slots",
+  "main": "monitor.js",
+  "scripts": {
+    "start": "node monitor.js",
+    "inspect": "node inspect-api.js"
+  },
+  "dependencies": {
+    "dotenv": "16.4.5",
+    "node-fetch": "3.3.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
