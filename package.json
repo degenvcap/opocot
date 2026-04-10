@@ -1,8 +1,8 @@
 {
-  "name": "rembayung-alert",
+  "name": "opocot",
   "version": "1.0.0",
   "type": "module",
-  "description": "Telegram alert bot for Rembayung UMAI booking slots",
+  "description": "Telegram alert bot for Opocot UMAI booking slots",
   "main": "monitor.js",
   "scripts": {
     "start": "node monitor.js",

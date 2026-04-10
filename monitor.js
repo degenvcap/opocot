@@ -4,7 +4,7 @@ import fetch from 'node-fetch';
 const {
   TELEGRAM_BOT_TOKEN,
   TELEGRAM_CHANNEL_ID,
-  RESTAURANT_SLUG = 'rembayung',
+  RESTAURANT_SLUG = 'opocot',
   POLL_INTERVAL_MS = '30000',
   UMAI_BASE_URL = 'https://umai.io',
 } = process.env;
@@ -26,7 +26,7 @@ async function fetchAvailableSlots() {
   const res = await fetch(url, {
     headers: {
       'Accept': 'application/json',
-      'User-Agent': 'DapatMeja-Bot/1.0',
+      'User-Agent': 'Opocot-Bot/1.0',
     },
   });
 
@@ -87,10 +87,10 @@ function formatAlert(newSlots) {
   });
 
   return [
-    '🔔 <b>Dapat Meja!</b> Slot baru terbuka di Rembayung:\n',
+    '🔔 <b>Opocot!</b> Slot baru terbuka:\n',
     ...lines,
     '',
-    '👉 Book sekarang: https://umai.io/restaurants/rembayung',
+    `👉 Book sekarang: https://umai.io/restaurants/${RESTAURANT_SLUG}`,
   ].join('\n');
 }
 
@@ -113,6 +113,6 @@ async function poll() {
   }
 }
 
-console.log(`Dapat Meja bot started. Polling every ${POLL_MS / 1000}s for "${RESTAURANT_SLUG}"...`);
+console.log(`Opocot bot started. Polling every ${POLL_MS / 1000}s for "${RESTAURANT_SLUG}"...`);
 poll(); // immediate first check
 setInterval(poll, POLL_MS);

@@ -7,7 +7,7 @@
 import 'dotenv/config';
 import fetch from 'node-fetch';
 
-const SLUG = process.env.RESTAURANT_SLUG || 'rembayung';
+const SLUG = process.env.RESTAURANT_SLUG || 'opocot';
 const BASE = process.env.UMAI_BASE_URL || 'https://umai.io';
 
 const ENDPOINTS = [
@@ -25,7 +25,7 @@ async function probe(path) {
     const res = await fetch(url, {
       headers: {
         'Accept': 'application/json',
-        'User-Agent': 'DapatMeja-Inspector/1.0',
+        'User-Agent': 'Opocot-Inspector/1.0',
       },
     });
     const text = await res.text();
