@@ -97,7 +97,21 @@ async function fetchSlots(date, partySize, token) {
   });
   if (!res.ok) return [];
   const data = await res.json();
-  return Array.isArray(data) ? data : (data.slots ?? []);
+
+  // Response is array of availability periods, each with a `slots` object keyed by time
+  // e.g. [{ reservation_availability: { name: "Dine In First Session" }, slots: { "11:00": {...} } }]
+  const times = [];
+  for (const period of (Array.isArray(data) ? data : [])) {
+    const slots = period.slots;
+    if (slots && typeof slots === 'object' && !Array.isArray(slots)) {
+      for (const [time, info] of Object.entries(slots)) {
+        // info can be an object with availability details, or just truthy
+        const available = info?.available !== false;
+        if (available) times.push({ time, session: period.reservation_availability?.name });
+      }
+    }
+  }
+  return times;
 }
 
 function parseBookableDates(data, partySize) {
@@ -134,8 +148,11 @@ async function sendTelegram(message) {
 
 function formatAlert(alerts) {
   const lines = alerts.map(a => {
-    const times = a.times.length ? `\n    ⏰ ${a.times.join(', ')}` : '';
-    return `📅 <b>${a.date}</b> — ${a.pax} pax${times}`;
+    const slotLines = a.slots.map(s => {
+      const session = s.session ? ` (${s.session.trim()})` : '';
+      return `    ⏰ ${s.time}${session}`;
+    }).join('\n');
+    return `📅 <b>${a.date}</b> — ${a.pax} pax\n${slotLines}`;
   });
   return [
     '🔔 <b>Opocot! Ada slot baru terbuka!</b>\n',
@@ -157,15 +174,10 @@ async function poll() {
 
       for (const { date, pax: p } of bookable) {
         const slots = await fetchSlots(date, p, token);
-        const times = slots
-          .map(s => s.time || s.slot_time || s.start_time)
-          .filter(Boolean);
-
-        // Only alert for genuinely open time slots that we haven't alerted on yet
-        const newTimes = times.filter(t => !alerted.has(`${date}|${p}|${t}`));
-        if (newTimes.length > 0) {
-          newAlerts.push({ date, pax: p, times: newTimes });
-          newTimes.forEach(t => alerted.add(`${date}|${p}|${t}`));
+        const newSlotObjs = slots.filter(s => !alerted.has(`${date}|${p}|${s.time}`));
+        if (newSlotObjs.length > 0) {
+          newAlerts.push({ date, pax: p, slots: newSlotObjs });
+          newSlotObjs.forEach(s => alerted.add(`${date}|${p}|${s.time}`));
         }
       }
     }
